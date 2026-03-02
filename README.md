@@ -23,7 +23,7 @@ cpgplotter creates publication-ready heatmaps of per-read CpG methylation probab
 Requires Python 3.13+.
 
 ```bash
-git clone https://github.com/yourusername/cpgplotter.git
+git clone https://github.com/tobybaker/cpgplotter.git
 cd cpgplotter
 pip install -e .
 ```
