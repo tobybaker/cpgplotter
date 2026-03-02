@@ -16,7 +16,7 @@ def render_interval_overlays(
     ax: Axes,
     cpg_intervals: pl.DataFrame,
     read_order: dict[str, int],
-    alpha: float = 0.3,
+    alpha: float = 0.8,
     label_colors: dict[str, str] | None = None,
 ) -> list[Patch]:
     """
@@ -50,9 +50,11 @@ def render_interval_overlays(
         labels = ["interval"]
 
     if label_colors is None:
-        cmap = plt.get_cmap("Set2")
+        # Custom bright palette: Lime Green, Yellow, Pink, Orange, Cyan, Bright White
+        bright_colors = ["#32CD32", "#FFFF00", "#FF69B4", "#FFA500", "#00FFFF", "#FFFFFF"]
+        
         label_colors = {
-            lab: cmap(i / max(len(labels) - 1, 1)) for i, lab in enumerate(labels)
+            lab: bright_colors[i % len(bright_colors)] for i, lab in enumerate(labels)
         }
 
     # Draw rectangles
@@ -70,8 +72,6 @@ def render_interval_overlays(
 
         # Score modulates opacity
         rect_alpha = alpha
-        if has_score and row["score"] is not None:
-            rect_alpha = alpha * float(row["score"])
 
         width = cpg_end - cpg_start + 1
         rect = Rectangle(

@@ -12,7 +12,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.colors import ListedColormap, BoundaryNorm
-from matplotlib.patches import Patch
+from matplotlib.transforms import blended_transform_factory
 
 
 def render_side_axis(
@@ -36,8 +36,9 @@ def render_side_axis(
         label: Axis label text.
 
     Returns:
-        Dict with legend info. For qualitative: {"handles": [...], "labels": [...]}.
-        For quantitative: {"image": AxesImage}.
+        Dict with rendering info. For qualitative: {"type": "qualitative",
+        "blocks": [...]}. For quantitative: {"type": "quantitative",
+        "image": AxesImage}.
     """
     if annotation_type == "qualitative":
         default_palette = palette or "tab10"
@@ -65,7 +66,8 @@ def _render_qualitative(
         label: Axis label.
 
     Returns:
-        Dict with "handles" and "labels" for legend creation.
+        Dict with "blocks" (list of (category, start, end) tuples describing
+        contiguous runs) and "type" = "qualitative".
     """
     # Map categories to integer codes
     categories = sorted(set(values))
@@ -93,9 +95,10 @@ def _render_qualitative(
     ax.tick_params(axis="x", bottom=False, labelbottom=False)
     ax.tick_params(axis="y", left=False, labelleft=False)
 
-    # Build legend handles
-    handles = [Patch(facecolor=colors[i], label=str(cat)) for i, cat in enumerate(categories)]
-    return {"handles": handles, "labels": [str(c) for c in categories]}
+    # Compute contiguous category blocks via run-length encoding
+    blocks = _compute_category_blocks(values)
+
+    return {"type": "qualitative", "blocks": blocks}
 
 
 def _render_quantitative(
@@ -132,4 +135,66 @@ def _render_quantitative(
     ax.tick_params(axis="x", bottom=False, labelbottom=False)
     ax.tick_params(axis="y", left=False, labelleft=False)
 
-    return {"image": image}
+    return {"type": "quantitative", "image": image}
+
+
+def _compute_category_blocks(
+    values: np.ndarray,
+) -> list[tuple[str, int, int]]:
+    """
+    Compute contiguous runs of identical values (run-length encoding).
+
+    Args:
+        values: Array of categorical values.
+
+    Returns:
+        List of (category, start_row, end_row) tuples. end_row is exclusive.
+    """
+    if len(values) == 0:
+        return []
+
+    blocks = []
+    current = values[0]
+    start = 0
+
+    for i in range(1, len(values)):
+        if values[i] != current:
+            blocks.append((str(current), start, i))
+            current = values[i]
+            start = i
+
+    blocks.append((str(current), start, len(values)))
+    return blocks
+
+
+def render_qualitative_labels(
+    label_ax: Axes,
+    blocks: list[tuple[str, int, int]],
+    fontsize: int = 8,
+) -> None:
+    """
+    Render rotated category labels on a label axis, centered on each block.
+
+    Args:
+        label_ax: Frameless axis to the left of the qualitative side axis,
+            sharing y with the heatmap.
+        blocks: List of (category, start_row, end_row) from _compute_category_blocks.
+        fontsize: Font size for label text.
+    """
+    # Blended transform: x in axes fraction [0,1], y in data coordinates
+    trans = blended_transform_factory(label_ax.transAxes, label_ax.transData)
+
+    for category, start, end in blocks:
+        # Center of the block in data coordinates (imshow rows are 0-indexed)
+        y_center = (start + end - 1) / 2.0
+        label_ax.text(
+            0.5,
+            y_center,
+            category,
+            transform=trans,
+            rotation=90,
+            ha="center",
+            va="center",
+            fontsize=fontsize,
+            clip_on=False,
+        )

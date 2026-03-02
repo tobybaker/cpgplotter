@@ -239,5 +239,52 @@ class CpGIndex:
 
         return indices, labels
 
+    def genomic_to_cpg_continuous(self, genomic_pos: int | float) -> float:
+        """
+        Map a genomic position to a fractional CpG-space coordinate.
+
+        Unlike genomic_to_cpg() which only returns exact CpG matches, this
+        method interpolates between flanking CpGs to give a continuous position.
+        This is needed for rendering gene features whose boundaries don't fall
+        on exact CpG positions.
+
+        Args:
+            genomic_pos: Genomic coordinate
+
+        Returns:
+            Fractional position in CpG index space
+        """
+        if self.n_cpgs == 0:
+            return 0.0
+
+        if self.n_cpgs == 1:
+            return 0.0
+
+        i = int(np.searchsorted(self.positions, genomic_pos))
+
+        # Exact match
+        if i < self.n_cpgs and self.positions[i] == genomic_pos:
+            return float(i)
+
+        # Before first CpG — extrapolate using first inter-CpG spacing
+        if i == 0:
+            spacing = self.positions[1] - self.positions[0]
+            if spacing > 0:
+                return float(genomic_pos - self.positions[0]) / spacing
+            return 0.0
+
+        # After last CpG — extrapolate using last inter-CpG spacing
+        if i >= self.n_cpgs:
+            spacing = self.positions[-1] - self.positions[-2]
+            if spacing > 0:
+                return float(self.n_cpgs - 1) + float(genomic_pos - self.positions[-1]) / spacing
+            return float(self.n_cpgs - 1)
+
+        # Between two CpGs — linear interpolation
+        left_pos = self.positions[i - 1]
+        right_pos = self.positions[i]
+        frac = float(genomic_pos - left_pos) / float(right_pos - left_pos)
+        return float(i - 1) + frac
+
     def __repr__(self) -> str:
         return f"CpGIndex(region='{self.region}', n_cpgs={self.n_cpgs})"

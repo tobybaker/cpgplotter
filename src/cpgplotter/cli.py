@@ -106,6 +106,12 @@ def main():
     help="Minimum number of CpGs a read must cover in the region to be included",
 )
 @click.option(
+    "--nan-weight",
+    type=float,
+    default=0.5,
+    help="Max weight for NaN coverage pattern in clustering distance (0=pure Hellinger, 1=coverage can dominate). Default: 0.5",
+)
+@click.option(
     "--max-reads",
     type=int,
     help="Maximum number of reads per panel",
@@ -144,6 +150,17 @@ def main():
     type=click.Path(exists=True, path_type=Path),
     help="Load configuration from YAML file (overrides other options)",
 )
+@click.option(
+    "--gtf",
+    type=click.Path(exists=True, path_type=Path),
+    help="GTF annotation file (.gtf or tabix-indexed .gtf.gz) for gene track above heatmap",
+)
+@click.option(
+    "--gene-types",
+    type=str,
+    default="protein_coding",
+    help="Comma-separated gene biotypes to display (default: protein_coding). Use 'all' for all types.",
+)
 def plot(
     region: Optional[str],
     bams: tuple[str, ...],
@@ -157,6 +174,7 @@ def plot(
     min_mapq: int,
     min_cpg_coverage: int,
     min_cpgs_per_read: int,
+    nan_weight: float,
     max_reads: Optional[int],
     figsize: Optional[str],
     dpi: int,
@@ -164,6 +182,8 @@ def plot(
     output_format: str,
     dump_config: Optional[Path],
     config: Optional[Path],
+    gtf: Optional[Path],
+    gene_types: str,
 ):
     """
     Generate a CpG methylation heatmap visualization.
@@ -266,8 +286,16 @@ def plot(
         region_clean = region.replace(":", "_").replace("-", "_")
         output = Path(f"cpgplotter_{region_clean}.{output_format}")
 
+    # Parse gene types
+    if gene_types == "all":
+        gene_types_list = ["all"]
+    else:
+        gene_types_list = [t.strip() for t in gene_types.split(",")]
+
     click.echo(f"Plotting region: {region}")
     click.echo(f"Samples: {len(bams_arg)}")
+    if gtf:
+        click.echo(f"Gene annotation: {gtf}")
 
     # Generate plot
     fig = plot_methylation(
@@ -283,6 +311,9 @@ def plot(
         min_mapq=min_mapq,
         min_cpg_coverage=min_cpg_coverage,
         min_cpgs_per_read=min_cpgs_per_read,
+        nan_weight=nan_weight,
+        gtf=gtf,
+        gene_types=gene_types_list,
         figsize=figsize_tuple,
         output=output,
         output_format=output_format,
@@ -319,6 +350,9 @@ def plot(
             min_mapq=min_mapq,
             min_cpg_coverage=min_cpg_coverage,
             min_cpgs_per_read=min_cpgs_per_read,
+            nan_weight=nan_weight,
+            gtf=gtf,
+            gene_types=gene_types_list or ["protein_coding"],
             figsize=figsize_tuple,
             output=output,
             output_format=output_format,

@@ -17,10 +17,12 @@ from cpgplotter.core.config import SampleSpec, PlotConfig
 
 # Core functions
 from cpgplotter.core.extraction import extract_methylation
+from cpgplotter.core.gene_annotation import load_gene_annotations
 
 # Rendering functions
 from cpgplotter.rendering.heatmap import render_heatmap
 from cpgplotter.rendering.layout import create_panel_layout, add_genomic_ticks
+from cpgplotter.rendering.gene_track import render_gene_track
 
 __all__ = [
     "__version__",
@@ -32,7 +34,9 @@ __all__ = [
     "SampleSpec",
     "PlotConfig",
     "extract_methylation",
+    "load_gene_annotations",
     "render_heatmap",
+    "render_gene_track",
     "create_panel_layout",
     "add_genomic_ticks",
 ]

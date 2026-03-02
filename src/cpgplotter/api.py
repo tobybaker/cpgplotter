@@ -16,11 +16,16 @@ from cpgplotter.core.coordinates import CpGIndex
 from cpgplotter.core.config import SampleSpec, PlotConfig, SideAxisSpec
 from cpgplotter.core.extraction import extract_methylation, MethylationData
 from cpgplotter.core.annotations import ReadAnnotations, ReadIntervals
+from cpgplotter.core.gene_annotation import (
+    load_gene_annotations,
+    select_representative_transcripts,
+)
 from cpgplotter.processing.sorting import sort_reads
 from cpgplotter.rendering.layout import create_panel_layout, add_genomic_ticks
 from cpgplotter.rendering.heatmap import render_heatmap, add_methylation_colorbar
-from cpgplotter.rendering.side_axes import render_side_axis
+from cpgplotter.rendering.side_axes import render_side_axis, render_qualitative_labels
 from cpgplotter.rendering.overlays import render_interval_overlays
+from cpgplotter.rendering.gene_track import render_gene_track
 
 
 def plot_methylation(
@@ -36,6 +41,9 @@ def plot_methylation(
     min_mapq: int = 0,
     min_cpg_coverage: int = 3,
     min_cpgs_per_read: int = 5,
+    nan_weight: float = 0.5,
+    gtf: Optional[str | Path] = None,
+    gene_types: Optional[list[str]] = None,
     figsize: Optional[tuple[float, float]] = None,
     output: Optional[str | Path] = None,
     output_format: str = "png",
@@ -82,6 +90,18 @@ def plot_methylation(
     bam_paths = [str(s.bam) for s in samples]
     cpg_index = CpGIndex(region=region, bam_path=bam_paths, min_cpg_coverage=min_cpg_coverage)
 
+    # 2b. Load gene annotations if GTF provided
+    gene_models = None
+    if gtf is not None:
+        gene_models = load_gene_annotations(
+            gtf_path=gtf,
+            chrom=cpg_index.chrom,
+            start=cpg_index.start,
+            end=cpg_index.end,
+            gene_types=gene_types,
+        )
+        gene_models = select_representative_transcripts(gene_models)
+
     # 3. Extract and process data for each sample
     sample_data = []
     for sample in samples:
@@ -114,6 +134,7 @@ def plot_methylation(
             read_names=meth_data.read_names,
             annotations=annot,
             sort_by=sort_by,
+            nan_weight=nan_weight,
         )
         sorted_matrix = meth_data.matrix[sorted_indices]
 
@@ -130,18 +151,34 @@ def plot_methylation(
     side_axis_specs = _normalize_side_axes(side_axes)
     n_side_axes = len(side_axis_specs)
 
+    # 4b. Resolve side axis types for layout (qualitative axes get label columns)
+    side_axis_types = _resolve_side_axis_types(
+        side_axis_specs, sample_data[0]["annotations"] if sample_data else None
+    )
+
     # 5. Create layout
+    has_gene_track = gene_models is not None and len(gene_models) > 0
     panel_labels = [s["sample"].name for s in sample_data]
     panel_read_counts = [len(s["read_names"]) for s in sample_data]
     layout = create_panel_layout(
         n_sample_panels=len(samples),
         n_side_axes=n_side_axes,
+        side_axis_types=side_axis_types,
         panel_height_mode=panel_height_mode,
         panel_read_counts=panel_read_counts,
         panel_labels=panel_labels,
         figsize=figsize,
         dpi=dpi,
+        has_gene_track=has_gene_track,
     )
+
+    # 5b. Render gene track if present
+    if has_gene_track and layout.gene_track_ax is not None:
+        render_gene_track(
+            ax=layout.gene_track_ax,
+            genes=gene_models,
+            cpg_index=cpg_index,
+        )
 
     # 6. Render each panel
     first_image = None
@@ -190,7 +227,7 @@ def plot_methylation(
             )
             palette = sa_spec.get("palette")
 
-            legend_info = render_side_axis(
+            render_info = render_side_axis(
                 ax=panel_axes.side_axes[sa_idx],
                 annotation_values=ordered_values,
                 annotation_type=ann_type,
@@ -198,9 +235,16 @@ def plot_methylation(
                 label=col_name,
             )
 
-            # Collect legend handles from first panel only
-            if panel_idx == 0 and "handles" in legend_info:
-                all_legend_handles.extend(legend_info["handles"])
+            # Render inline labels for qualitative axes
+            if (
+                render_info.get("type") == "qualitative"
+                and sa_idx < len(panel_axes.side_label_axes)
+                and panel_axes.side_label_axes[sa_idx] is not None
+            ):
+                render_qualitative_labels(
+                    label_ax=panel_axes.side_label_axes[sa_idx],
+                    blocks=render_info["blocks"],
+                )
 
         # Render interval overlays
         intervals = sdata["intervals"]
@@ -229,7 +273,7 @@ def plot_methylation(
         bottom_ax = layout.panels[-1].heatmap
         add_genomic_ticks(bottom_ax, cpg_index)
 
-    # 9. Add legend if we have handles
+    # 9. Add legend if we have handles (interval overlays only)
     if all_legend_handles:
         layout.fig.legend(
             handles=all_legend_handles,
@@ -287,6 +331,9 @@ def plot_methylation_from_config(config: PlotConfig | str | Path) -> Figure:
         min_mapq=config.min_mapq,
         min_cpg_coverage=config.min_cpg_coverage,
         min_cpgs_per_read=config.min_cpgs_per_read,
+        nan_weight=config.nan_weight,
+        gtf=config.gtf,
+        gene_types=config.gene_types,
         figsize=config.figsize,
         output=config.output,
         output_format=config.output_format,
@@ -374,3 +421,25 @@ def _normalize_side_axes(
         specs.append(entry)
 
     return specs
+
+
+def _resolve_side_axis_types(
+    side_axis_specs: list[dict],
+    first_annotations: Optional[ReadAnnotations],
+) -> list[str]:
+    """Resolve side axis types from specs and annotation inference.
+
+    Returns a list of "qualitative" or "quantitative" for each side axis.
+    """
+    types = []
+    for spec in side_axis_specs:
+        if "type" in spec:
+            types.append(spec["type"])
+        elif first_annotations is not None:
+            col = spec["column"]
+            types.append(
+                first_annotations.column_types.get(col, "qualitative")
+            )
+        else:
+            types.append("qualitative")
+    return types

@@ -9,14 +9,15 @@ from scipy.cluster.hierarchy import linkage
 
 from cpgplotter.core.annotations import ReadAnnotations
 from cpgplotter.processing.sorting import (
+    compute_distance_matrix,
     compute_hellinger_distance_matrix,
     hierarchical_cluster_reads,
     sort_reads,
 )
 
 
-class TestComputeHellingerDistanceMatrix:
-    """Tests for pairwise Hellinger distance matrix computation."""
+class TestComputeDistanceMatrix:
+    """Tests for pairwise coverage-aware Hellinger distance computation."""
 
     def test_distance_matrix_small_overlap(self):
         """Test with small matrix with known overlaps."""
@@ -28,31 +29,32 @@ class TestComputeHellingerDistanceMatrix:
             ]
         )
 
-        distances = compute_hellinger_distance_matrix(matrix)
+        # nan_weight=0 gives pure normalised Hellinger
+        distances = compute_distance_matrix(matrix, nan_weight=0.0)
 
         # Should have 3 distances: (0,1), (0,2), (1,2)
         assert len(distances) == 3
 
         # (0,1) should have small distance (overlap on CpGs 0,1)
-        assert distances[0] < 1.0
+        assert distances[0] < 0.5
 
-        # (0,2) should be sqrt(2) (no overlap)
-        assert distances[1] == pytest.approx(np.sqrt(2.0))
+        # (0,2) should be 1.0 (no overlap, normalised max)
+        assert distances[1] == pytest.approx(1.0)
 
-        # (1,2) should be sqrt(2) (no overlap)
-        assert distances[2] == pytest.approx(np.sqrt(2.0))
+        # (1,2) should be 1.0 (no overlap, normalised max)
+        assert distances[2] == pytest.approx(1.0)
 
     def test_distance_matrix_identical_reads(self):
         """Identical reads should have distance ~0."""
         matrix = np.array([[0.5, 0.5, 0.5], [0.5, 0.5, 0.5]])
 
-        distances = compute_hellinger_distance_matrix(matrix)
+        distances = compute_distance_matrix(matrix, nan_weight=0.0)
 
         assert len(distances) == 1
         assert distances[0] < 1e-10
 
     def test_distance_matrix_no_overlap(self):
-        """All reads non-overlapping should give all distances = sqrt(2)."""
+        """All reads non-overlapping should give max distance."""
         matrix = np.array(
             [
                 [0.5, np.nan, np.nan],
@@ -61,19 +63,17 @@ class TestComputeHellingerDistanceMatrix:
             ]
         )
 
-        distances = compute_hellinger_distance_matrix(matrix)
-
-        # 3 reads → 3 distances
+        # With nan_weight=0, all distances are 1.0 (normalised Hellinger max)
+        distances = compute_distance_matrix(matrix, nan_weight=0.0)
         assert len(distances) == 3
-        assert distances == pytest.approx(np.full(3, np.sqrt(2.0)))
+        assert distances == pytest.approx(np.full(3, 1.0))
 
     def test_distance_matrix_compatible_with_linkage(self):
         """Distance matrix should be compatible with scipy linkage."""
-        # Create random matrix
         np.random.seed(42)
         matrix = np.random.rand(10, 20)
 
-        distances = compute_hellinger_distance_matrix(matrix)
+        distances = compute_distance_matrix(matrix)
 
         # Should be able to create linkage without errors
         linkage_matrix = linkage(distances, method="ward")
@@ -85,7 +85,7 @@ class TestComputeHellingerDistanceMatrix:
         """Single read should return empty distance array."""
         matrix = np.array([[0.5, 0.5, 0.5]])
 
-        distances = compute_hellinger_distance_matrix(matrix)
+        distances = compute_distance_matrix(matrix)
 
         assert len(distances) == 0
 
@@ -93,10 +93,84 @@ class TestComputeHellingerDistanceMatrix:
         """Two reads should return single distance."""
         matrix = np.array([[0.0, 0.5], [0.1, 0.6]])
 
-        distances = compute_hellinger_distance_matrix(matrix)
+        distances = compute_distance_matrix(matrix)
 
         assert len(distances) == 1
         assert distances[0] > 0
+
+    def test_nan_weight_zero_is_pure_hellinger(self):
+        """nan_weight=0 should ignore coverage patterns entirely."""
+        # Two reads with same methylation but different coverage
+        matrix = np.array(
+            [
+                [0.5, 0.5, np.nan, np.nan],
+                [0.5, 0.5, 0.5, 0.5],
+            ]
+        )
+
+        d_zero = compute_distance_matrix(matrix, nan_weight=0.0)
+
+        # Both have identical methylation where they overlap → distance ≈ 0
+        assert d_zero[0] < 1e-10
+
+    def test_nan_weight_increases_distance_for_different_coverage(self):
+        """Reads with different coverage patterns should be farther apart with nan_weight > 0."""
+        # Two reads covering opposite halves, similar methylation on overlap
+        matrix = np.array(
+            [
+                [0.5, 0.5, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan],
+                [np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, 0.5, 0.5],
+            ]
+        )
+
+        d_zero = compute_distance_matrix(matrix, nan_weight=0.0)
+        d_half = compute_distance_matrix(matrix, nan_weight=0.5)
+
+        # Both are max distance (no overlap) with nan_weight=0
+        # With nan_weight>0, should still be high (Jaccard=1.0 for disjoint)
+        assert d_zero[0] == pytest.approx(1.0)
+        assert d_half[0] == pytest.approx(1.0)
+
+    def test_nan_weight_reduces_distance_for_shared_coverage(self):
+        """Reads with identical coverage but different methylation should be
+        closer with nan_weight>0 vs reads with different coverage."""
+        n = 20  # enough CpGs that sigmoid activates
+        # Read A and B: same coverage (first half), different methylation
+        row_a = np.concatenate([np.full(10, 0.0), np.full(10, np.nan)])
+        row_b = np.concatenate([np.full(10, 1.0), np.full(10, np.nan)])
+        # Read C: different coverage (second half)
+        row_c = np.concatenate([np.full(10, np.nan), np.full(10, 0.5)])
+
+        matrix = np.array([row_a, row_b, row_c])
+
+        d = compute_distance_matrix(matrix, nan_weight=0.8)
+        # d[0] = A-B, d[1] = A-C, d[2] = B-C
+
+        # A-B have same coverage pattern (Jaccard=0), A-C have disjoint coverage (Jaccard=1)
+        # With high nan_weight, A-B should be closer than A-C even though
+        # A-B have maximally different methylation
+        assert d[0] < d[1]
+
+    def test_sigmoid_negligible_at_low_nan_fraction(self):
+        """With low NaN fraction, nan_weight should have negligible effect."""
+        # Reads with only 1/20 NaN positions (5%)
+        np.random.seed(42)
+        base = np.random.rand(20)
+        row_a = base.copy()
+        row_b = base.copy()
+        row_a[0] = np.nan  # 5% NaN
+
+        matrix = np.array([row_a, row_b])
+
+        d_zero = compute_distance_matrix(matrix, nan_weight=0.0)
+        d_half = compute_distance_matrix(matrix, nan_weight=0.5)
+
+        # Distances should be very similar since sigmoid is near 0 at 5% NaN
+        assert abs(d_zero[0] - d_half[0]) < 0.05
+
+    def test_backward_compat_alias(self):
+        """compute_hellinger_distance_matrix should be an alias for compute_distance_matrix."""
+        assert compute_hellinger_distance_matrix is compute_distance_matrix
 
 
 class TestHierarchicalClusterReads:

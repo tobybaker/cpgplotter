@@ -12,7 +12,7 @@ existing code.
 """
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Optional
 
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
@@ -26,6 +26,7 @@ class PanelAxes:
 
     heatmap: Axes
     side_axes: list[Axes] = field(default_factory=list)
+    side_label_axes: list[Optional[Axes]] = field(default_factory=list)
     label: str = ""
 
 
@@ -36,16 +37,20 @@ class PanelLayout:
     fig: Figure
     panels: list[PanelAxes] = field(default_factory=list)
     cbar_ax: Axes = None
+    gene_track_ax: Optional[Axes] = None
 
 
 def create_panel_layout(
     n_sample_panels: int,
     n_side_axes: int = 0,
+    side_axis_types: list[str] | None = None,
     panel_height_mode: Literal["uniform", "proportional"] = "uniform",
     panel_read_counts: list[int] | None = None,
     panel_labels: list[str] | None = None,
     figsize: tuple[float, float] | None = None,
     dpi: int = 150,
+    has_gene_track: bool = False,
+    gene_track_height_ratio: float = 0.2,
 ) -> PanelLayout:
     """
     Create a multi-panel figure with shared x-axis and optional side axes.
@@ -53,22 +58,31 @@ def create_panel_layout(
     Args:
         n_sample_panels: Number of sample panels (one per BAM).
         n_side_axes: Number of side annotation axes per panel.
+        side_axis_types: Type of each side axis ("qualitative" or "quantitative").
+            Qualitative axes get a narrow label column to their left.
+            If None, no label columns are created.
         panel_height_mode: How to size panels — "uniform" or "proportional".
         panel_read_counts: Read counts per panel (required if proportional).
         panel_labels: Labels for each panel (sample names).
         figsize: Figure size (width, height) in inches. Auto-calculated if None.
         dpi: Figure resolution.
+        has_gene_track: Whether to include a gene annotation track above panels.
+        gene_track_height_ratio: Height ratio for the gene track row relative
+            to a uniform sample panel (default: 0.2).
 
     Returns:
-        PanelLayout with figure, panel axes, and colorbar axis.
+        PanelLayout with figure, panel axes, colorbar axis, and optional
+        gene track axis.
     """
     if panel_labels is None:
         panel_labels = [f"Panel {i}" for i in range(n_sample_panels)]
 
     # Calculate figure size if not provided
     if figsize is None:
-        width = 12 + n_side_axes * 0.5
+        width = 12 + n_side_axes * 1.0
         height = max(4, 3 * n_sample_panels)
+        if has_gene_track:
+            height += 1.5
         figsize = (width, height)
 
     fig = plt.figure(figsize=figsize, dpi=dpi, layout="constrained")
@@ -89,9 +103,17 @@ def create_panel_layout(
     else:
         height_ratios = [1] * n_sample_panels
 
-    # Sub-grid for sample panels (stacked vertically)
+    # Add gene track row at the top if requested
+    n_rows = n_sample_panels
+    gene_track_row = None
+    if has_gene_track:
+        height_ratios = [gene_track_height_ratio] + height_ratios
+        n_rows += 1
+        gene_track_row = 0
+
+    # Sub-grid for all rows (gene track + sample panels, stacked vertically)
     panel_gs = GridSpecFromSubplotSpec(
-        nrows=n_sample_panels,
+        nrows=n_rows,
         ncols=1,
         subplot_spec=outer_gs[0, 0],
         height_ratios=height_ratios,
@@ -102,44 +124,106 @@ def create_panel_layout(
     cbar_ax = fig.add_subplot(outer_gs[0, 1])
 
     # Build per-panel axes
-    # Column width ratios: [side_ax_1, side_ax_2, ..., heatmap]
-    side_ax_ratio = 1
+    # Column structure depends on side axis types: qualitative axes get a
+    # narrow label column to their left.
+    side_ax_ratio = 1.5
+    label_ratio = 0.8
     heatmap_ratio = 20
-    col_ratios = [side_ax_ratio] * n_side_axes + [heatmap_ratio]
-    n_cols = n_side_axes + 1
+
+    # Build column layout: track which GridSpec column maps to what
+    col_ratios = []
+    # For each side axis index, store its GridSpec column for the strip
+    strip_col_indices = []
+    # For each side axis index, store its GridSpec column for the label (or None)
+    label_col_indices = []
+
+    _sa_types = side_axis_types or []
+
+    for sa_idx in range(n_side_axes):
+        if sa_idx < len(_sa_types) and _sa_types[sa_idx] == "qualitative":
+            label_col_indices.append(len(col_ratios))
+            col_ratios.append(label_ratio)
+        else:
+            label_col_indices.append(None)
+        strip_col_indices.append(len(col_ratios))
+        col_ratios.append(side_ax_ratio)
+
+    heatmap_col_idx = len(col_ratios)
+    col_ratios.append(heatmap_ratio)
+    n_cols = len(col_ratios)
 
     panels = []
     prev_heatmap_ax = None
+    gene_track_ax = None
+
+    # Create gene track axis if requested
+    if has_gene_track:
+        gt_inner_gs = GridSpecFromSubplotSpec(
+            nrows=1,
+            ncols=n_cols,
+            subplot_spec=panel_gs[0, 0],
+            width_ratios=col_ratios,
+            wspace=0.05,
+        )
+        gene_track_ax = fig.add_subplot(gt_inner_gs[0, heatmap_col_idx])
+        prev_heatmap_ax = gene_track_ax
+
+        # Hide all non-heatmap columns in the gene track row
+        for col_idx in range(n_cols):
+            if col_idx != heatmap_col_idx:
+                empty_ax = fig.add_subplot(gt_inner_gs[0, col_idx])
+                empty_ax.set_visible(False)
+
+    # Sample panel offset (shifted by 1 if gene track present)
+    panel_start_row = 1 if has_gene_track else 0
 
     for i in range(n_sample_panels):
+        row_idx = panel_start_row + i
         inner_gs = GridSpecFromSubplotSpec(
             nrows=1,
             ncols=n_cols,
-            subplot_spec=panel_gs[i, 0],
+            subplot_spec=panel_gs[row_idx, 0],
             width_ratios=col_ratios,
             wspace=0.05,
         )
 
-        # Create heatmap axis — share x with first panel's heatmap
+        # Create heatmap axis — share x with first panel's heatmap (or gene track)
         if prev_heatmap_ax is None:
-            heatmap_ax = fig.add_subplot(inner_gs[0, n_side_axes])
+            heatmap_ax = fig.add_subplot(inner_gs[0, heatmap_col_idx])
             prev_heatmap_ax = heatmap_ax
         else:
             heatmap_ax = fig.add_subplot(
-                inner_gs[0, n_side_axes], sharex=prev_heatmap_ax
+                inner_gs[0, heatmap_col_idx], sharex=prev_heatmap_ax
             )
 
-        # Create side axes — share y with this panel's heatmap
+        # Create side axes and their label axes
         side_axes = []
+        side_label_axes: list[Optional[Axes]] = []
+        first_col_idx = strip_col_indices[0] if strip_col_indices else heatmap_col_idx
+
         for j in range(n_side_axes):
-            side_ax = fig.add_subplot(inner_gs[0, j], sharey=heatmap_ax)
+            strip_col = strip_col_indices[j]
+            side_ax = fig.add_subplot(inner_gs[0, strip_col], sharey=heatmap_ax)
             side_ax.tick_params(
                 axis="x", bottom=False, labelbottom=False
             )
-            # Only show y-tick labels on the leftmost axis
-            if j > 0:
+            # Only show y-tick labels on the leftmost column
+            if strip_col > first_col_idx:
                 side_ax.tick_params(axis="y", left=False, labelleft=False)
             side_axes.append(side_ax)
+
+            # Create label axis for qualitative side axes
+            lbl_col = label_col_indices[j]
+            if lbl_col is not None:
+                lbl_ax = fig.add_subplot(inner_gs[0, lbl_col], sharey=heatmap_ax)
+                lbl_ax.set_frame_on(False)
+                lbl_ax.tick_params(
+                    axis="both", left=False, labelleft=False,
+                    bottom=False, labelbottom=False,
+                )
+                side_label_axes.append(lbl_ax)
+            else:
+                side_label_axes.append(None)
 
         # Hide x-tick labels on all but the bottom panel
         if i < n_sample_panels - 1:
@@ -153,11 +237,14 @@ def create_panel_layout(
             PanelAxes(
                 heatmap=heatmap_ax,
                 side_axes=side_axes,
+                side_label_axes=side_label_axes,
                 label=panel_labels[i],
             )
         )
 
-    return PanelLayout(fig=fig, panels=panels, cbar_ax=cbar_ax)
+    return PanelLayout(
+        fig=fig, panels=panels, cbar_ax=cbar_ax, gene_track_ax=gene_track_ax
+    )
 
 
 def add_genomic_ticks(

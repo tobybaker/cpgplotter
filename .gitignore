@@ -51,6 +51,9 @@ htmlcov/
 output/
 figures/
 
+# But track documentation images
+!docs/images/*.png
+
 # Data files (don't commit large BAM files)
 *.bam
 *.bai
@@ -77,3 +80,10 @@ dmypy.json
 
 # Ruff
 .ruff_cache/
+
+check_plot.py
+CLAUDE.md
+generate_test_annotations.py
+main.py
+tests/
+examples/

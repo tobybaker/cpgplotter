@@ -84,6 +84,9 @@ class PlotConfig(BaseModel):
     min_mapq: int = 0
     min_cpg_coverage: int = 3
     min_cpgs_per_read: int = 5
+    nan_weight: float = 0.5
+    gtf: Optional[Path] = None
+    gene_types: list[str] = Field(default_factory=lambda: ["protein_coding"])
     figsize: Optional[tuple[float, float]] = None
     output: Optional[Path] = None
     output_format: str = "png"
